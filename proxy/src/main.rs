@@ -13,11 +13,13 @@ use color_eyre::{
 };
 use log::info;
 use pingora::{
+    Error, ErrorType,
     prelude::HttpPeer,
     server::{RunArgs, Server},
     upstreams::peer::PeerOptions,
 };
 use pingora_proxy::{ProxyHttp, Session, http_proxy_service};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -94,20 +96,35 @@ impl ProxyHttp for SnatGateway {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
-        let Some(addr_header) = session.get_header("Pxls-Proxy-Target-IP") else {
-            return Err(pingora::Error::new(pingora::ErrorType::InvalidHTTPHeader));
+        let Some(client_addr) = session.client_addr() else {
+            return Err(Error::new(ErrorType::Custom("client address unavailable")));
         };
-        let Some(addr_header_str) = addr_header.to_str().ok() else {
-            return Err(pingora::Error::new(pingora::ErrorType::InvalidHTTPHeader));
-        };
-        let Some(src_addr) = Ipv6Addr::from_str(addr_header_str).ok() else {
-            return Err(pingora::Error::new(pingora::ErrorType::InvalidHTTPHeader));
+        let Some(client_addr) = client_addr.as_inet() else {
+            return Err(Error::new(ErrorType::Custom("client address unavailable")));
         };
 
-        // make sure that the specified IP is within the allowed range
-        if !ctx.src_prefix.contains_addr(src_addr) {
-            return Err(pingora::Error::new(pingora::ErrorType::InvalidHTTPHeader));
+        // calculate hash from client IP address
+        let mut hasher = Sha256::new();
+        match client_addr {
+            SocketAddr::V4(client_addr) => {
+                hasher.update([4]);
+                hasher.update(client_addr.ip().octets());
+            }
+            SocketAddr::V6(client_addr) => {
+                hasher.update([6]);
+                hasher.update(client_addr.ip().octets());
+            }
         }
+        let hash = hasher.finalize();
+
+        // first truncate hash to 128-bit integer for easier processing
+        let hash_u128 = u128::from_be_bytes(hash[..16].try_into().unwrap());
+
+        // then append to source prefix
+        // effectively truncates the hash further to match the prefix
+        let subnet_mask = ctx.src_prefix.subnet_mask();
+        let src_addr = ctx.src_prefix.addr.to_bits() | (hash_u128 & !subnet_mask);
+        let src_addr = Ipv6Addr::from_bits(src_addr);
 
         let addr = (ctx.target_name.as_str(), ctx.target_port);
         let addr2 = (ctx.target_name.clone(), ctx.target_port);
@@ -118,16 +135,18 @@ impl ProxyHttp for SnatGateway {
             // enable IP_FREEBIND
             // required for IPv6 in combination with Any-IP
             nix::sys::socket::setsockopt(&socket, nix::sys::socket::sockopt::IpFreebind, &true)
-                .map_err(|_| pingora::Error::new(pingora::ErrorType::SocketError))?;
+                .map_err(|_| Error::new(ErrorType::SocketError))?;
 
             // bind to IP specified by header
-            socket.bind((src_addr, 0).into()).unwrap();
+            socket
+                .bind((src_addr, 0).into())
+                .map_err(|_| Error::new(ErrorType::BindError))?;
 
             let Ok(local_addr) = socket.local_addr() else {
-                return Err(pingora::Error::new(pingora::ErrorType::SocketError));
+                return Err(Error::new(ErrorType::SocketError));
             };
             let SocketAddr::V6(local_addr) = local_addr else {
-                return Err(pingora::Error::new(pingora::ErrorType::SocketError));
+                return Err(Error::new(ErrorType::SocketError));
             };
             info!("connecting to {addr2:?} as {local_addr:?}");
 
