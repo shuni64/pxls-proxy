@@ -11,6 +11,6 @@ dns-lookup = "3.0.1"
 env_logger = "0.11.8"
 log = "0.4.28"
 nix = { version = "0.30.1", features = ["net", "socket"] }
-pingora = "0.6.0"
+pingora = { version = "0.6.0", features = ["openssl"] }
 pingora-proxy = "0.6.0"
 sha2 = "0.10.9"
