@@ -105,6 +105,10 @@ impl ProxyHttp for SnatGateway {
                 let Ok(client_addr) = IpAddr::from_str(header_str) else {
                     return Err(Error::new(ErrorType::Custom("bad X-Forwarded-For header")));
                 };
+
+                // delete X-Forwarded-For before passing upstream
+                session.req_header_mut().remove_header("X-Forwarded-For");
+
                 client_addr
             }
             None => {
