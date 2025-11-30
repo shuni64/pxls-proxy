@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     str::FromStr,
     sync::Arc,
     time::Duration,
@@ -96,23 +96,38 @@ impl ProxyHttp for SnatGateway {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
-        let Some(client_addr) = session.client_addr() else {
-            return Err(Error::new(ErrorType::Custom("client address unavailable")));
-        };
-        let Some(client_addr) = client_addr.as_inet() else {
-            return Err(Error::new(ErrorType::Custom("client address unavailable")));
+        let client_addr = match session.get_header("X-Forwarded-For") {
+            Some(header) => {
+                // TODO: handle multiple IPs (split by comma)
+                let Ok(header_str) = header.to_str() else {
+                    return Err(Error::new(ErrorType::Custom("bad X-Forwarded-For header")));
+                };
+                let Ok(client_addr) = IpAddr::from_str(header_str) else {
+                    return Err(Error::new(ErrorType::Custom("bad X-Forwarded-For header")));
+                };
+                client_addr
+            }
+            None => {
+                let Some(client_addr) = session.client_addr() else {
+                    return Err(Error::new(ErrorType::Custom("client address unavailable")));
+                };
+                let Some(client_addr) = client_addr.as_inet() else {
+                    return Err(Error::new(ErrorType::Custom("client address unavailable")));
+                };
+                client_addr.ip()
+            }
         };
 
         // calculate hash from client IP address
         let mut hasher = Sha256::new();
         match client_addr {
-            SocketAddr::V4(client_addr) => {
+            IpAddr::V4(client_addr) => {
                 hasher.update([4]);
-                hasher.update(client_addr.ip().octets());
+                hasher.update(client_addr.octets());
             }
-            SocketAddr::V6(client_addr) => {
+            IpAddr::V6(client_addr) => {
                 hasher.update([6]);
-                hasher.update(client_addr.ip().octets());
+                hasher.update(client_addr.octets());
             }
         }
         let hash = hasher.finalize();
