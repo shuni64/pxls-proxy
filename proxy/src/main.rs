@@ -188,7 +188,7 @@ impl ProxyHttp for SnatGateway {
             let SocketAddr::V6(local_addr) = local_addr else {
                 return Err(Error::new(ErrorType::SocketError));
             };
-            info!("connecting to {addr2:?} as {local_addr:?}");
+            info!("{client_addr:?} -> {addr2:?} via {local_addr:?}");
 
             Ok(())
         }));
