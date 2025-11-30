@@ -126,8 +126,29 @@ impl ProxyHttp for SnatGateway {
         let src_addr = ctx.src_prefix.addr.to_bits() | (hash_u128 & !subnet_mask);
         let src_addr = Ipv6Addr::from_bits(src_addr);
 
-        let addr = (ctx.target_name.as_str(), ctx.target_port);
-        let addr2 = (ctx.target_name.clone(), ctx.target_port);
+        let mut target_ipv6_addrs = dns_lookup::getaddrinfo(
+            Some(&ctx.target_name),
+            None,
+            Some(dns_lookup::AddrInfoHints {
+                flags: 0,
+                address: nix::libc::AF_INET6,
+                socktype: 0,
+                protocol: 0,
+            }),
+        )
+        .map_err(|_| Error::new(ErrorType::Custom("name resolution failed")))?;
+
+        let target_addr_info = target_ipv6_addrs
+            .next()
+            .ok_or_else(|| Error::new(ErrorType::Custom("no IPv6 addresses resolved for target")))?
+            .map_err(|_| Error::new(ErrorType::Custom("name resolution failed")))?;
+        let SocketAddr::V6(target_addr) = target_addr_info.sockaddr else {
+            panic!("received IPv4 answer to IPv6-only DNS query")
+        };
+        let target_addr = *target_addr.ip();
+
+        let addr = (target_addr, ctx.target_port);
+        let addr2 = addr.clone();
 
         let mut options = PeerOptions::new();
 
